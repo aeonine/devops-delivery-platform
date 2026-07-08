@@ -1,0 +1,11 @@
+name: DemoPlugin
+version: 1.0.0
+main: aeon.ina.demo.DemoPlugin
+api-version: '1.21'
+authors: [Ina Aeon]
+description: Demo Plugin
+
+commands:
+  ping:
+    description : Demo Command
+    usage: /ping

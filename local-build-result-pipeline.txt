@@ -1,0 +1,116 @@
+pipeline {
+    agent any
+
+    tools {
+        // Maven tool configured in Jenkins as "M3"
+        maven "M3"
+    }
+
+    environment {
+        REPO_PATH    = "/repos/test/.git"
+        REPO_BRANCH  = "main"
+
+        REDMINE_URL   = "http://redmine:3000"
+        REDMINE_ISSUE = "3"
+    }
+
+    stages {
+        stage('Checkout Demo Plugin') {
+            steps {
+                // jenkins workspace residual cleanup
+                deleteDir()
+
+                sh '''
+                    set -e
+                    git clone "$REPO_PATH" .
+                    git checkout "$REPO_BRANCH"
+                '''
+            }
+        }
+
+        stage('Build and Test') {
+            steps {
+                sh '''
+                    set -e
+                    mvn -B -DskipTests=false -Dmaven.test.failure.ignore=true clean test package
+                '''
+            }
+            post {
+                always {
+                    // Allows builds with no tests yet, but still records reports if present
+                    junit testResults: '**/target/surefire-reports/*.xml', allowEmptyResults: true
+                }
+            }
+        }
+
+        stage('Archive Artifact') {
+            when {
+                expression { currentBuild.currentResult == null || currentBuild.currentResult == 'SUCCESS' }
+            }
+            steps {
+                archiveArtifacts artifacts: '**/target/*.jar', fingerprint: true
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Pipeline finished.'
+        }
+
+        success {
+            withCredentials([string(credentialsId: 'redmine_api_key', variable: 'REDMINE_KEY')]) {
+                sh '''
+                    set -e
+                    cat > redmine-payload.json <<EOF
+{"issue":{"notes":"(Jenkins) Validation task associated with this issue SUCCEEDED.\\nBuild: ${BUILD_URL}\\nTarget: ${BUILD_URL}artifact/target/\\nResult: SUCCESS"}}
+EOF
+
+                    curl -sS -X PUT \
+                      -H "X-Redmine-API-Key: $REDMINE_KEY" \
+                      -H "Content-Type: application/json" \
+                      --data @redmine-payload.json \
+                      "$REDMINE_URL/issues/$REDMINE_ISSUE.json"
+                '''
+            }
+        }
+
+        unstable {
+            withCredentials([string(credentialsId: 'redmine_api_key', variable: 'REDMINE_KEY')]) {
+                sh '''
+                    set -e
+                    cat > redmine-payload.json <<EOF
+{"issue":{"notes":"(Jenkins) Validation task associated with this issue returned UNSTABLE.\\nBuild: ${BUILD_URL}\\nResult: UNSTABLE"}}
+EOF
+
+                    curl -sS -X PUT \
+                      -H "X-Redmine-API-Key: $REDMINE_KEY" \
+                      -H "Content-Type: application/json" \
+                      --data @redmine-payload.json \
+                      "$REDMINE_URL/issues/$REDMINE_ISSUE.json"
+                '''
+            }
+        }
+
+        failure {
+            withCredentials([string(credentialsId: 'redmine_api_key', variable: 'REDMINE_KEY')]) {
+                sh '''
+                    set -e
+                    cat > redmine-payload.json <<EOF
+{"issue":{"notes":"(Jenkins) Build result: FAILURE\\nBuild: ${BUILD_URL}"}}
+EOF
+
+                    curl -sS -X PUT \
+                      -H "X-Redmine-API-Key: $REDMINE_KEY" \
+                      -H "Content-Type: application/json" \
+                      --data @redmine-payload.json \
+                      "$REDMINE_URL/issues/$REDMINE_ISSUE.json"
+                '''
+            }
+        }
+
+        cleanup {
+            cleanWs(deleteDirs: true, disableDeferredWipeout: true)
+        }
+    }
+}

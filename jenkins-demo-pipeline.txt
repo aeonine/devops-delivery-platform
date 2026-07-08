@@ -1,0 +1,27 @@
+pipeline {
+  agent any
+
+  stages {
+    stage('Build') {
+      steps {
+        echo "Demo build running..."
+      }
+    }
+
+    stage('Notify Redmine') {
+      steps {
+        // use the redmine api key from credentials
+        withCredentials([string(credentialsId: 'redmine_api_key', variable: 'REDMINE_KEY')]) {
+          // send the note to redmine via an API PUT request
+          sh '''
+            curl -v -X PUT \
+              -H "X-Redmine-API-Key: ${REDMINE_KEY}" \
+              -H "Content-Type: application/json" \
+              -d '{"issue":{"notes":"Jenkins Build Success!"}}' \
+              "http://redmine:3000/issues/1.json"
+          '''
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,294 @@
+services:
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    restart: unless-stopped
+    # expose ports 80 and 443 to the host for HTTP and HTTPS traffic
+    ports:
+      - "80:80"
+      - "443:443"
+      
+      # DEMO ONLY MINECRAFT SERVER PORT
+      - "25565:25565"
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ping || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    command:
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+
+      # DEMO ONLY MINECRAFT SERVER ENTRYPOINT
+      - --entrypoints.minecraft.address=:25565
+
+      # Force HTTP -> HTTPS redirection
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+
+      # Docker provider + dynamic config files 
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=devplatform_internal
+      - --providers.file.directory=/dynamic
+      - --providers.file.watch=true
+
+      # enable 8080:/ping for the healthcheck and route it through the traefik entrypoint
+      - --ping=true
+      - --entrypoints.traefik.address=:8080
+      - --ping.entrypoint=traefik
+      # dont remove this (it breaks the healthcheck)
+  
+    volumes:
+    # Read Docker labels and socket for Traefik to work
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/dynamic:/dynamic:ro
+      - ./certs:/certs:ro
+    networks:
+    # the traefik container needs to be on both networks to route traffic to the other containers
+      - external_network
+      - internal_network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    restart: unless-stopped
+    ports:
+      - "5432"
+    environment:
+      POSTGRES_DB: redmine
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - demo_postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal_network
+
+  demo-redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - demo_redis_data:/data
+    networks:
+      - external_network
+
+  authelia:
+    image: authelia/authelia:latest
+    container_name: authelia
+    restart: unless-stopped
+    ports:
+      - "9091"
+    environment:
+      TZ: ${TZ}
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9091/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - ./authelia:/config
+    depends_on:
+      demo-redis:
+        condition: service_healthy
+    networks:
+      - external_network
+    labels:
+      # enable traefik for this container and set the network to the external one
+      - traefik.enable=true
+      - traefik.docker.network=devplatform_external
+        # set the authelia router host rule to match authelia subdomain and route to the authelia container
+      - traefik.http.routers.authelia.rule=Host(`authelia.${HOST_DOMAIN}`)
+      # set the entrypoint to websecure and enable TLS for the authelia router
+      - traefik.http.routers.authelia.entrypoints=websecure
+      - traefik.http.routers.authelia.tls=true
+      - traefik.http.services.authelia.loadbalancer.server.port=9091
+  redmine:
+    image: redmine:5-alpine
+    container_name: redmine
+    restart: unless-stopped
+    ports:
+      - "3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/login || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    environment:
+      TZ: ${TZ}
+      REDMINE_DB_POSTGRES: postgres
+      REDMINE_DB_DATABASE: redmine
+      REDMINE_DB_USERNAME: ${POSTGRES_USER}
+      REDMINE_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      REDMINE_DB_ENCODING: utf8
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - redmine_files:/usr/src/redmine/files
+      - ./redmine/repos:/repos
+    networks:
+      - internal_network
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=devplatform_internal
+      # set the router host rule to match redmine subdomain and route to the redmine container
+      - traefik.http.routers.redmine.rule=Host(`redmine.${HOST_DOMAIN}`)
+      # set the entrypoint to websecure and enable TLS for the redmine router
+      - traefik.http.routers.redmine.entrypoints=websecure
+      - traefik.http.routers.redmine.tls=true
+      - traefik.http.routers.redmine.priority=1
+      - traefik.http.services.redmine.loadbalancer.server.port=3000
+      # configure the forward authentication middleware to use authelia for authentication and set the auth response headers to pass user information to the redmine container
+      - traefik.http.middlewares.authelia.forwardauth.address=http://authelia:9091/api/verify?rd=http://authelia.${HOST_DOMAIN}/
+      - traefik.http.middlewares.authelia.forwardauth.trustForwardHeader=true
+      - traefik.http.middlewares.authelia.forwardauth.authResponseHeaders=Remote-User,Remote-Groups,Remote-Name,Remote-Email
+      # apply the forward authentication middleware to the redmine router to protect it with authelia
+      - traefik.http.routers.redmine.middlewares=authelia
+
+  jenkins:
+    image: jenkins/jenkins:latest
+    container_name: jenkins
+    restart: unless-stopped
+    user: "root"
+    ports:
+      - "8080"
+      - "50000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/login >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+    volumes:
+      - jenkins_data:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./redmine/repos:/repos
+
+      # DEMO ONLY MC SERVER LOCAL VOLUME MOUNT
+      - ./mc-data:/mc-data
+    networks:
+      - internal_network
+    labels:
+      - traefik.enable=true
+      # set the network to the internal one since jenkins doesn't need to be accessed directly from the outside, it will be accessed through traefik and protected by authelia
+      - traefik.docker.network=devplatform_internal
+      # set the router host rule to match jenkins subdomain and route to the jenkins container
+      - traefik.http.routers.jenkins.rule=Host(`jenkins.${HOST_DOMAIN}`)
+      # set the entrypoint to websecure and enable TLS for the jenkins router
+      - traefik.http.routers.jenkins.entrypoints=websecure
+      - traefik.http.routers.jenkins.tls=true
+      - traefik.http.services.jenkins.loadbalancer.server.port=8080
+      # configure the forward authentication middleware to use authelia for authentication and set the auth response headers to pass user information to the jenkins container
+      - traefik.http.middlewares.authelia.forwardauth.address=http://authelia:9091/api/verify?rd=http://authelia.${HOST_DOMAIN}/
+      - traefik.http.middlewares.authelia.forwardauth.trustForwardHeader=true
+      - traefik.http.middlewares.authelia.forwardauth.authResponseHeaders=Remote-User,Remote-Groups,Remote-Name,Remote-Email
+      # apply the forward authentication middleware to the jenkins router to protect it with authelia
+      - traefik.http.routers.jenkins.middlewares=authelia
+  netdata:
+    image: netdata/netdata:latest
+    container_name: netdata
+    restart: unless-stopped
+    ports:
+      - "19999"
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      DO_NOT_TRACK: "1"
+      TZ: ${TZ}
+    volumes:
+      # mount the netdata config, lib and cache directories to persist the netdata configuration and data across container restarts
+      - netdata_config:/etc/netdata
+      - netdata_lib:/var/lib/netdata
+      - netdata_cache:/var/cache/netdata
+      # mount host system files to allow netdata to monitor the host system, these are mounted as read-only to prevent any potential security issues
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      # mount the docker socket to allow netdata to monitor docker containers, this is mounted as read-only to prevent any potential security issues
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - internal_network
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=devplatform_internal
+
+      # set the router host rule to match netdata subdomain and route to the netdata container
+      - traefik.http.routers.netdata.rule=Host(`netdata.localtest.me`)
+      # set the entrypoint to websecure and enable TLS for the netdata router
+      - traefik.http.routers.netdata.entrypoints=websecure
+      - traefik.http.routers.netdata.tls=true
+      - traefik.http.services.netdata.loadbalancer.server.port=19999
+      # configure the forward authentication middleware to use authelia for authentication and set the auth response headers to pass user information to the netdata container
+      - traefik.http.middlewares.authelia.forwardauth.address=http://authelia:9091/api/verify?rd=http://authelia.${HOST_DOMAIN}/
+      - traefik.http.middlewares.authelia.forwardauth.trustForwardHeader=true
+      - traefik.http.middlewares.authelia.forwardauth.authResponseHeaders=Remote-User,Remote-Groups,Remote-Name,Remote-Email
+      # apply the forward authentication middleware to the netdata router to protect it with authelia
+      - traefik.http.routers.netdata.middlewares=authelia
+
+# DEMO ONLY MINECRAFT SERVER SERVICE
+  mc:
+    image: itzg/minecraft-server
+    container_name: mc-dev
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+    networks:
+      - internal_network
+    environment:
+      RCON_PASSWORD: ${MC_RCON_PASSWORD}
+      EULA: "TRUE"
+      TYPE: "PAPER"
+      VERSION: "LATEST"
+      MEMORY: "2G"
+    volumes:
+      - ./mc-data:/data
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=devplatform_external
+
+      # route traffic from the minecraft entrypoint
+      # server goes up at minecraft.localtest.me:25565
+      - traefik.tcp.routers.minecraft.entrypoints=minecraft
+      - traefik.tcp.routers.minecraft.rule=HostSNI(`*`)
+      - traefik.tcp.routers.minecraft.service=minecraft-svc
+
+      # Forward the port to the minecraft container
+      - traefik.tcp.services.minecraft-svc.loadbalancer.server.port=25565
+
+# defines the networks for the containers
+# a custom name is used to avoid conflicts with other networks in the system (don't remove them)
+networks:
+  external_network:
+    name: devplatform_external
+  internal_network:
+    name: devplatform_internal
+
+# defines the volume for each container
+volumes:
+  demo_postgres_data:
+  demo_redis_data:
+  jenkins_data:
+  redmine_files:
+  netdata_config:
+  netdata_lib:
+  netdata_cache:

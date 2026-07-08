@@ -1,0 +1,9 @@
+# TLS configuration for Traefik
+
+tls:
+# Define the certificates to be used for TLS termination
+  certificates:
+    # Path to the TLS certificate file for the domain
+    - certFile: /certs/localhost.pem
+    # Corresponding private key for the certificate
+      keyFile: /certs/localhost-key.pem

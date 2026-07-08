@@ -1,0 +1,9 @@
+users:
+  admin:
+    displayname: "Admin"
+    # make sure to set this to a different password!
+    # this the hash for the password "123"
+    password: "$argon2id$v=19$m=65536,t=3,p=4$J9EVVGb/gMnOkCXm4Jw7Qg$8orTh6z+Ma4ut32oczU8Tt7ih9brfOzgfzevjMIC//c"
+    email: dev@example.com
+    groups:
+      - admins
