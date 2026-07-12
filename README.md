@@ -2,7 +2,7 @@
 
 DevOps engineering project implementing automated software delivery workflows, testing infrastructure and deployment automation.
 
-[📄 View report](./report)
+[📄 View report](./report/README.md)
 [💻 Source code](./code)
 
 ---
