@@ -1,6 +1,6 @@
 # DevOps Delivery Platform
 
-100/100 DevOps engineering project implementing automated software delivery workflows, testing infrastructure and deployment automation.
+DevOps engineering project implementing automated software delivery workflows, testing infrastructure and deployment automation.
 
 [📄 View report](./report)
 [💻 Source code](./code)
