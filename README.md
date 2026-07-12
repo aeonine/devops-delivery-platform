@@ -3,7 +3,7 @@
 100/100 DevOps engineering project implementing automated software delivery workflows, testing infrastructure and deployment automation.
 
 [📄 View report](./report)
-[💻 Source code](./src)
+[💻 Source code](./code)
 
 ---
 
@@ -22,7 +22,7 @@ The system focuses on:
 
 ## Architecture
 
-![Architecture diagram](images/diagram.png)
+![Architecture diagram](./code/images/diagram.png)
 
 ---
 
@@ -38,14 +38,6 @@ The system focuses on:
 ## Results
 
 Achieved 100/100 assessment score.
-
-Key outcomes:
-
-- ...
-- ...
-- ...
-
----
 
 ## Report
 
