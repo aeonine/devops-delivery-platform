@@ -38,9 +38,3 @@ The system focuses on:
 ## Results
 
 Achieved 100/100 assessment score.
-
-## Report
-
-The full technical report is available here:
-
-[📄 Read the report](/report/README.md)
